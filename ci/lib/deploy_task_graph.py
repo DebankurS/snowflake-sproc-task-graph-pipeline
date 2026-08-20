@@ -138,18 +138,19 @@ def run(dry_run):
         database=config["database"],
         schema=config["schema"],
     )
-    root = Root(connection)
+    try:
+        root = Root(connection)
 
-    schema = root.databases[config["database"]].schemas[config["schema"]]
+        schema = root.databases[config["database"]].schemas[config["schema"]]
 
-    dag = build_dag(config, procedures, warehouse)
-    dag_op = DAGOperation(schema)
-    # or_replace makes redeploys idempotent; DAGOperation owns suspend/resume
-    # ordering across the whole graph.
-    dag_op.deploy(dag, mode=CreateMode.or_replace)
-    dag_op.run(dag)
-
-    connection.close()
+        dag = build_dag(config, procedures, warehouse)
+        dag_op = DAGOperation(schema)
+        # or_replace makes redeploys idempotent; DAGOperation owns suspend/resume
+        # ordering across the whole graph.
+        dag_op.deploy(dag, mode=CreateMode.or_replace)
+        dag_op.run(dag)
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":

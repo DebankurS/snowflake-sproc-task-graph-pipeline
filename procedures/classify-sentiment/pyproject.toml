@@ -1,0 +1,23 @@
+# `[project.dependencies]` is the single source of truth for what
+# register_procedures.py requests from Snowflake's Anaconda channel
+# (CREATE PROCEDURE ... PACKAGES) -- exact-pinned so a `uv sync` in this
+# directory installs the identical versions used at deploy time. transformers
+# and pytorch are treated as available on Snowflake's Anaconda channel
+# (Snowpark ML ships both there) -- not independently verified against a
+# live account from here; bump these pins after checking the channel if a
+# deploy rejects them.
+#
+# NOTE: this lists PyPI's package name (`torch`), since that's what `uv`
+# resolves against -- Snowflake's Anaconda channel calls the same package
+# `pytorch`. register_procedures.py's ANACONDA_PACKAGE_NAME_OVERRIDES
+# translates PyPI name -> Anaconda name when building the PACKAGES list, so
+# this file can stay a normal, uv-resolvable dependency list.
+[project]
+name = "classify-sentiment"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-snowpark-python==1.54.0",
+    "transformers==5.15.1",
+    "torch==2.13.0",
+]

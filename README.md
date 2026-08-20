@@ -74,8 +74,12 @@ by name.
 
 ## How it works
 
-The GitLab pipeline (`.gitlab-ci.yml`) has two stages:
+The GitLab pipeline (`.gitlab-ci.yml`) has three stages:
 
+0. **`validate`** -- runs both scripts' `--dry-run` mode (manifest parsing,
+   cycle detection) on every merge request as well as on `main`, so a bad
+   `procedure.yaml` is caught before it merges, not after it breaks the
+   next real deploy.
 1. **`register`** -- `ci/lib/register_procedures.py` scans
    `procedures/*/procedure.yaml`, and for each node uploads its entrypoint
    file plus everything else alongside it in `src/` (via Snowpark's
@@ -93,7 +97,10 @@ The GitLab pipeline (`.gitlab-ci.yml`) has two stages:
    pipeline that references an object by name rather than going through
    `snowflake.core`.
 
-Both stages only run on pushes to `main`.
+`register` and `deploy` only run on pushes to `main`; `validate` also runs
+on merge requests. `deploy_task_graph` runs under a named GitLab
+`environment: production`, so it can be put behind a protected environment
+(required approvers / allowed deployers) without any pipeline changes.
 
 ## Repo layout
 
@@ -101,7 +108,10 @@ Both stages only run on pushes to `main`.
 .gitlab-ci.yml            Pipeline definition (stages, required CI variables)
 task-graph.yaml            Snowflake-side config: database, schema, stage, DAG name
 procedures/<name>/
-  procedure.yaml            name, depends_on (edges in the DAG), entrypoint, handler, packages
+  procedure.yaml            name, depends_on (edges in the DAG), entrypoint, handler
+  pyproject.toml, uv.lock   Exact-pinned deps -- single source of truth for both the
+                             Anaconda `PACKAGES` requested at deploy and what `uv sync`
+                             installs locally for testing, see below
   src/                       The node's application code -- its own folder structure,
                              can be arbitrarily complex, never nested inline elsewhere
   vendor/                    Optional. Wheels for dependencies not on Snowflake's
@@ -114,23 +124,45 @@ ci/
     deploy_task_graph.py     Discovers the graph, builds + deploys the DAG
 ```
 
+## Declaring a node's dependencies
+
+Each node's `procedures/<name>/pyproject.toml` `[project.dependencies]` is
+the single source of truth for its Anaconda-channel dependencies --
+exact-pinned (`pkg==version`), so `register_procedures.py` requests exactly
+those pins from Snowflake (`CREATE PROCEDURE ... PACKAGES`) *and* a
+`uv sync` in that directory installs the identical versions for local
+testing. One list instead of two that can silently drift apart or typo out
+of sync with each other.
+
+Snowflake's Anaconda channel occasionally names a package differently than
+PyPI does (`pytorch` vs. PyPI's `torch` is the standing example in this
+repo) -- `register_procedures.py`'s `ANACONDA_PACKAGE_NAME_OVERRIDES` maps
+the PyPI name in `pyproject.toml` to the Anaconda name sent to Snowflake, so
+`pyproject.toml` itself only ever needs to list normal, `uv`-resolvable PyPI
+names.
+
 ## Using a dependency that isn't on Snowflake's Anaconda channel
 
-`procedure.yaml`'s `packages:` list only resolves against Snowflake's
-Anaconda channel (`CREATE PROCEDURE ... PACKAGES`). For anything else --
-an internal/private package, or a pip-only dependency with no Anaconda
-build -- there's no package name to request, so it has to be vendored as a
-wheel instead:
+For an internal/private package, or a pip-only dependency with no Anaconda
+build, there's no Anaconda package name to request at all, so it has to be
+vendored as a wheel instead:
 
 1. Download (or build) the wheel, *and* the wheel for every dependency it
    pulls in that also isn't on the Anaconda channel -- vendoring a package
    usually means vendoring its whole non-Anaconda dependency closure, not
    just the top-level package. Commit them all under
    `procedures/<name>/vendor/`.
-2. That's it -- `register_procedures.py` picks up every file in `vendor/`
-   automatically and passes it to `register_from_file`'s `imports` alongside
-   the sibling `.py` files from `src/`, the same way Snowpark handles any
-   other zip/wheel import. No `procedure.yaml` field, no script change.
+2. `register_procedures.py` picks up every file in `vendor/` automatically
+   and passes it to `register_from_file`'s `imports` alongside the sibling
+   `.py` files from `src/`, the same way Snowpark handles any other
+   zip/wheel import. No script change needed.
+3. Also list the same package, pinned to the same version as the wheel you
+   just vendored, in that node's `pyproject.toml` under
+   `[dependency-groups] vendored = [...]` (with
+   `[tool.uv] default-groups = ["vendored"]` so a plain `uv sync` installs
+   it too). This is *not* sent to Snowflake's `PACKAGES` -- the committed
+   wheel is the real deploy artifact -- it exists purely so the same version
+   is installed locally for testing the handler.
 
 This only works for pure-Python wheels: Snowflake's stored procedure sandbox
 runs on Linux x86_64, so a wheel with a compiled/native extension built on
@@ -184,11 +216,12 @@ the Azure AD / OAuth security integration in `.gitlab-ci.yml`.
 `procedure.yaml`'s `external_access_integrations:` field names it, and
 `register_procedures.py` passes that straight through to
 `register_from_file`'s `external_access_integrations` argument -- no
-per-node special-casing, same pattern as `packages:`.
+per-node special-casing.
 
-`transformers` and `pytorch` themselves are requested via `packages:`
-(Snowflake's Anaconda channel carries both, for Snowpark ML) -- vendoring
-is for filling gaps in the Anaconda channel, not a substitute for it.
+`transformers` and `pytorch` themselves are requested via
+`pyproject.toml`'s `[project.dependencies]` (Snowflake's Anaconda channel
+carries both, for Snowpark ML) -- vendoring is for filling gaps in the
+Anaconda channel, not a substitute for it.
 
 ## Adding a task
 

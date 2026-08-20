@@ -1,0 +1,12 @@
+# `[project.dependencies]` is the single source of truth for what
+# register_procedures.py requests from Snowflake's Anaconda channel
+# (CREATE PROCEDURE ... PACKAGES) -- exact-pinned so a `uv sync` in this
+# directory installs the identical versions used at deploy time. No
+# `packages:` field in procedure.yaml anymore; this file replaces it.
+[project]
+name = "aggregate-report"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-snowpark-python==1.54.0",
+]

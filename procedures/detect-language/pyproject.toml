@@ -1,0 +1,27 @@
+# `[project.dependencies]` is the single source of truth for what
+# register_procedures.py requests from Snowflake's Anaconda channel
+# (CREATE PROCEDURE ... PACKAGES) -- exact-pinned so a `uv sync` in this
+# directory installs the identical versions used at deploy time.
+#
+# `dependency-groups.vendored` is NOT sent to Snowflake's PACKAGES -- it's
+# langdetect isn't on the Anaconda channel at all, so it's vendored as a
+# wheel under vendor/ instead (that's the real deploy artifact, picked up
+# separately by register_procedures.py's vendor_imports()). It's listed
+# here, pinned to the same version as the committed wheel, purely so
+# `uv sync` also installs it locally for testing this node's handler.
+[project]
+name = "detect-language"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-snowpark-python==1.54.0",
+    "six==1.17.0",
+]
+
+[dependency-groups]
+vendored = [
+    "langdetect==1.0.9",
+]
+
+[tool.uv]
+default-groups = ["vendored"]

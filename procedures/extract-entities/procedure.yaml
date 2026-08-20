@@ -2,8 +2,10 @@ name: extract-entities
 depends_on: [ingest-tickets]
 entrypoint: src/handler.py
 handler: run
-# phonenumbers (Google's libphonenumber, pure Python, ships its own
-# metadata tables) is not on Snowflake's Anaconda channel -- vendored, see
-# vendor/. Unlike ingest-tickets/detect-language, this is a single
+# Dependencies (Anaconda-channel packages requested at deploy, plus what
+# `uv sync` installs for local testing, including vendored ones) live in
+# pyproject.toml, not here. phonenumbers (Google's libphonenumber, pure
+# Python, ships its own metadata tables) is not on Snowflake's Anaconda
+# channel -- vendored, see vendor/ and pyproject.toml's `vendored`
+# dependency-group. Unlike ingest-tickets/detect-language, this is a single
 # data-heavy package rather than a dependency chain.
-packages: [snowflake-snowpark-python]

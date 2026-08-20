@@ -14,4 +14,11 @@ TOKEN_RESPONSE=$(curl -sf -X POST \
   -d "scope=${SNOWFLAKE_OAUTH_SCOPE}" \
   -d "grant_type=client_credentials")
 
-echo "$TOKEN_RESPONSE" | jq -r '.access_token'
+ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+
+if [ -z "$ACCESS_TOKEN" ]; then
+  echo "get_snowflake_token.sh: response had no access_token field" >&2
+  exit 1
+fi
+
+echo "$ACCESS_TOKEN"

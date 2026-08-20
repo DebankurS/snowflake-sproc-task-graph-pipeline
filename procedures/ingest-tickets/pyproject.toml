@@ -1,0 +1,30 @@
+# `[project.dependencies]` is the single source of truth for what
+# register_procedures.py requests from Snowflake's Anaconda channel
+# (CREATE PROCEDURE ... PACKAGES) -- exact-pinned so a `uv sync` in this
+# directory installs the identical versions used at deploy time.
+#
+# `dependency-groups.vendored` is NOT sent to Snowflake's PACKAGES --
+# python-slugify and its own dependency text-unidecode aren't on the
+# Anaconda channel at all, so they're vendored as wheels under vendor/
+# instead (that's the real deploy artifact, picked up separately by
+# register_procedures.py's vendor_imports()). They're listed here, pinned
+# to the same versions as the committed wheels, purely so `uv sync` also
+# installs them locally for testing this node's handler.
+[project]
+name = "ingest-tickets"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-snowpark-python==1.54.0",
+    "beautifulsoup4==4.15.0",
+    "soupsieve==2.9.2",
+]
+
+[dependency-groups]
+vendored = [
+    "python-slugify==8.0.4",
+    "text-unidecode==1.3",
+]
+
+[tool.uv]
+default-groups = ["vendored"]

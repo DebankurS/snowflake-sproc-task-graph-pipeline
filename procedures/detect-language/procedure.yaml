@@ -2,8 +2,10 @@ name: detect-language
 depends_on: [ingest-tickets]
 entrypoint: src/handler.py
 handler: run
-# six -- langdetect's only dependency -- is treated as available on
-# Snowflake's Anaconda channel; langdetect itself is not, so it's vendored
-# (see vendor/). A node mixing an Anaconda package with a vendored one for
-# the same underlying library is the common case in practice.
-packages: [snowflake-snowpark-python, six]
+# Dependencies (Anaconda-channel packages requested at deploy, plus what
+# `uv sync` installs for local testing, including vendored ones) live in
+# pyproject.toml, not here. six -- langdetect's only dependency -- is
+# treated as available on Snowflake's Anaconda channel; langdetect itself
+# is not, so it's vendored (see vendor/ and pyproject.toml's `vendored`
+# dependency-group). A node mixing an Anaconda package with a vendored one
+# for the same underlying library is the common case in practice.

@@ -20,15 +20,20 @@ than importing it as a Python module in this process, so this script never
 needs whatever third-party packages a node's own handler code imports --
 only PyYAML and snowflake-snowpark-python, same as deploy_task_graph.py.
 
-A node's `packages:` list (procedure.yaml) only resolves against Snowflake's
-Anaconda channel. For a dependency that isn't there -- an internal/private
+A node's procedures/<name>/pyproject.toml `[project.dependencies]` (see
+anaconda_packages()) is what gets requested from Snowflake's Anaconda
+channel -- exact-pinned, and also what `uv sync` in that directory installs
+for local testing, so there's one list instead of two that can drift apart.
+For a dependency that isn't on the Anaconda channel -- an internal/private
 package, or anything pip-only -- there's no Anaconda package to request, so
 it has to be vendored: download (or build) its wheel, and every wheel in its
 own dependency chain that also isn't on the Anaconda channel, and commit
-them under procedures/<name>/vendor/. Each one rides along as one more
+them under procedures/<name>/vendor/ (also listed, same pins, in that node's
+pyproject.toml `vendored` dependency-group -- purely so `uv sync` installs
+them too, never sent to Snowflake). Each one rides along as one more
 `imports` entry next to the sibling .py files, same as any other zip/wheel
-passed to register_from_file's `imports`. See procedures/task-e/ for a
-worked example: it vendors python-slugify *and* text-unidecode, the
+passed to register_from_file's `imports`. See procedures/ingest-tickets/ for
+a worked example: it vendors python-slugify *and* text-unidecode, the
 dependency python-slugify itself pulls in -- vendoring one package usually
 means vendoring its whole non-Anaconda dependency closure, not just the
 top-level one. Convention-based like everything else here: a vendor/ folder
@@ -39,6 +44,7 @@ SNOWFLAKE_TOKEN, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE.
 """
 import argparse
 import os
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -47,9 +53,38 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PROCEDURES_DIR = REPO_ROOT / "procedures"
 CONFIG_FILE = REPO_ROOT / "task-graph.yaml"
 
+# Package names that differ between PyPI (what each node's pyproject.toml
+# lists, and what `uv` resolves against for local testing) and Snowflake's
+# Anaconda channel (what CREATE PROCEDURE ... PACKAGES expects). `pytorch`
+# is the standing example: PyPI/import name is `torch`, Anaconda channel
+# name is `pytorch`. Extend this if another mismatch turns up.
+ANACONDA_PACKAGE_NAME_OVERRIDES = {
+    "torch": "pytorch",
+}
+
 
 def load_config():
     return yaml.safe_load(CONFIG_FILE.read_text())
+
+
+def anaconda_packages(node_dir):
+    """Each node's procedures/<name>/pyproject.toml `[project.dependencies]`
+    is the single source of truth for what's requested from Snowflake's
+    Anaconda channel -- exact-pinned, so a `uv sync` in that directory
+    installs the identical versions used at deploy time, and a typo or drift
+    between "what's tested" and "what's deployed" isn't possible. Anything
+    only available as a vendored wheel (not on Anaconda) belongs in that
+    pyproject.toml's `vendored` dependency-group instead, purely so `uv
+    sync` installs it too for local testing -- it's never returned from
+    here; the committed vendor/*.whl is the real deploy artifact for those,
+    picked up separately by vendor_imports()."""
+    data = tomllib.loads((node_dir / "pyproject.toml").read_text())
+    packages = []
+    for dep in data["project"]["dependencies"]:
+        name, _, version = dep.partition("==")
+        anaconda_name = ANACONDA_PACKAGE_NAME_OVERRIDES.get(name, name)
+        packages.append(f"{anaconda_name}=={version}" if version else anaconda_name)
+    return packages
 
 
 def load_procedures():
@@ -62,7 +97,7 @@ def load_procedures():
             "depends_on": data.get("depends_on", []),
             "entrypoint": entrypoint,
             "handler": data["handler"],
-            "packages": data.get("packages", ["snowflake-snowpark-python"]),
+            "packages": anaconda_packages(node_dir),
             "vendor_dir": node_dir / "vendor",
             "external_access_integrations": data.get("external_access_integrations", []),
         }
@@ -146,25 +181,26 @@ def register(dry_run):
         }
     ).create()
 
-    session.sql(f"CREATE STAGE IF NOT EXISTS {config['stage']}").collect()
+    try:
+        session.sql(f"CREATE STAGE IF NOT EXISTS {config['stage']}").collect()
 
-    for name, p in procedures.items():
-        target = proc_name(name)
-        imports = sibling_imports(p["entrypoint"]) + vendor_imports(p["vendor_dir"])
-        print(f"Registering {target} from {p['entrypoint'].relative_to(REPO_ROOT)}:{p['handler']}")
-        session.sproc.register_from_file(
-            file_path=str(p["entrypoint"]),
-            func_name=p["handler"],
-            name=target,
-            is_permanent=True,
-            stage_location=f"@{config['stage']}",
-            imports=imports or None,
-            packages=p["packages"],
-            external_access_integrations=p["external_access_integrations"] or None,
-            replace=True,
-        )
-
-    session.close()
+        for name, p in procedures.items():
+            target = proc_name(name)
+            imports = sibling_imports(p["entrypoint"]) + vendor_imports(p["vendor_dir"])
+            print(f"Registering {target} from {p['entrypoint'].relative_to(REPO_ROOT)}:{p['handler']}")
+            session.sproc.register_from_file(
+                file_path=str(p["entrypoint"]),
+                func_name=p["handler"],
+                name=target,
+                is_permanent=True,
+                stage_location=f"@{config['stage']}",
+                imports=imports or None,
+                packages=p["packages"],
+                external_access_integrations=p["external_access_integrations"] or None,
+                replace=True,
+            )
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":

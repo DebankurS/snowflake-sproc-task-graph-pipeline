@@ -50,15 +50,39 @@
 #   SNOWFLAKE_WAREHOUSE       e.g. tutorial_warehouse
 
 stages:
+  - validate
   - register
   - deploy
 
-register_procedures:
-  stage: register
+variables:
+  UV_CACHE_DIR: $CI_PROJECT_DIR/.cache/uv
+
+default:
   image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  cache:
+    key: uv-$CI_COMMIT_REF_SLUG
+    paths:
+      - $UV_CACHE_DIR
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl jq && rm -rf /var/lib/apt/lists/*
-    - uv sync --project ci --no-cache
+    - uv sync --project ci
+
+# Runs the cycle-detection / manifest validation that register_procedures.py
+# and deploy_task_graph.py already support via --dry-run, but on merge
+# requests too -- so a bad procedure.yaml (unknown depends_on, a cycle, a
+# missing entrypoint) is caught before it lands on main, not after it's
+# already broken the next real deploy.
+validate_task_graph:
+  stage: validate
+  script:
+    - uv run --project ci python ci/lib/register_procedures.py --dry-run
+    - uv run --project ci python ci/lib/deploy_task_graph.py --dry-run
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+register_procedures:
+  stage: register
   script:
     - export SNOWFLAKE_TOKEN=$(sh ci/lib/get_snowflake_token.sh)
     - uv run --project ci python ci/lib/register_procedures.py
@@ -67,11 +91,12 @@ register_procedures:
 
 deploy_task_graph:
   stage: deploy
-  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
   needs: ["register_procedures"]
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq curl jq && rm -rf /var/lib/apt/lists/*
-    - uv sync --project ci --no-cache
+  # Named environment so this can be put behind a GitLab protected
+  # environment (required approvals / allowed deployers) -- this job
+  # reconciles the live production task graph on every push to main.
+  environment:
+    name: production
   script:
     - export SNOWFLAKE_TOKEN=$(sh ci/lib/get_snowflake_token.sh)
     - uv run --project ci python ci/lib/deploy_task_graph.py
