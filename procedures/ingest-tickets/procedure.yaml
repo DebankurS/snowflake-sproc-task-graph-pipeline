@@ -2,12 +2,5 @@ name: ingest-tickets
 depends_on: []
 entrypoint: src/handler.py
 handler: run
-# Dependencies (Anaconda-channel packages requested at deploy, plus what
-# `uv sync` installs for local testing, including vendored ones) live in
-# pyproject.toml, not here. beautifulsoup4 and its dependency soupsieve are
-# treated as available on Snowflake's Anaconda channel (both are common
-# conda-forge packages) -- not independently verified against a live
-# account from here. python-slugify and its own dependency text-unidecode
-# are NOT on the Anaconda channel, so they're vendored instead -- see
-# vendor/, pyproject.toml's `vendored` dependency-group, and
-# register_procedures.py's vendor_imports().
+# python-slugify and text-unidecode aren't on Anaconda, so they're
+# vendored (see vendor/); beautifulsoup4/soupsieve are.

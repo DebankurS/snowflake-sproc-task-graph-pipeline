@@ -1,12 +1,7 @@
-# Snowflake-side configuration for the register and deploy steps
-# (ci/lib/register_procedures.py, ci/lib/deploy_task_graph.py). Connection
-# credentials and per-build values stay as CI variables/env vars -- this
-# file is just the stable, non-secret structure.
+# Snowflake-side config for register_procedures.py / deploy_task_graph.py.
 dag_name: support_ticket_enrichment
 database: tutorial_db
 schema: data_schema
-# Permanent internal stage backing each node's uploaded procedure code.
-# Must be permanent (not the auto temp stage Snowpark defaults to), because
-# the registering CI session ends but the tasks keep firing long after --
-# a temp stage tied to that session would disappear with it.
+# Must be a permanent stage, not Snowpark's default temp stage -- the
+# registering session ends but the tasks keep firing long after.
 stage: sproc_task_graph_stage

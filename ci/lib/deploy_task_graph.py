@@ -1,25 +1,8 @@
 """
-Reconciles a Snowflake Task Graph from the procedures/*/procedure.yaml
-manifests in this repo and task-graph.yaml (database/schema/stage/DAG
-name). Adding a node to the graph is just adding a new procedures/<name>/
-directory -- this script discovers nodes by scanning, no per-service code
-here. Mirrors ci/lib/deploy_task_graph.py from the SPCS task-graph pipeline
-this repo is modeled on, minus the compute-pool/image plumbing that has no
-equivalent for stored procedures.
-
-Uses the Snowflake Python API (snowflake.core.task.dagv1: DAG, DAGTask,
-DAGOperation) to build and deploy the graph -- no hand-written CREATE/ALTER/
-SUSPEND/RESUME TASK SQL. DAGOperation owns creating, altering and the
-leaf-to-root resume ordering Snowflake requires.
-
-Each task's body is a plain `CALL <name>_proc()` statement invoking the
-permanent stored procedure that ci/lib/register_procedures.py already
-uploaded and created (the "build" step in this pipeline). That CALL string
-is the one thing here with no snowflake.core equivalent -- DAGTask accepts a
-Callable/StoredProcedureCall too, but those register an *anonymous* sproc
-from a live Python object, which would mean re-uploading + re-executing each
-node's handler code in this process instead of just referencing the
-permanent procedure that build step already registered.
+Reconciles a Snowflake Task Graph from procedures/*/procedure.yaml and
+task-graph.yaml, using snowflake.core.task.dagv1 (DAG, DAGTask,
+DAGOperation). Each task's body is `CALL <name>_proc()`, invoking the
+permanent procedure that register_procedures.py already created.
 
 Required env vars (unless --dry-run): SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
 SNOWFLAKE_TOKEN, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE.
@@ -54,9 +37,7 @@ def load_procedures():
 
 
 def topological_order(procedures):
-    """Pure-Python pre-flight check (Kahn's algorithm): fails fast with a
-    clear cycle error before the graph ever reaches Snowflake, and drives the
-    --dry-run summary. Roots-first order."""
+    """Kahn's algorithm; raises on cycles. Roots-first order."""
     remaining = {name: set(deps) for name, deps in procedures.items()}
     order = []
 
@@ -76,9 +57,7 @@ def topological_order(procedures):
 
 
 def proc_name(name):
-    # Must match register_procedures.py's proc_name -- Snowflake unquoted
-    # identifiers can't contain hyphens, and this is embedded in a raw
-    # `CALL` statement rather than going through the structured DAG/Task API.
+    # Must match register_procedures.py's proc_name.
     return f"{name.replace('-', '_')}_proc"
 
 
@@ -97,7 +76,7 @@ def build_dag(config, procedures, warehouse):
         }
         for name, deps in procedures.items():
             for dep in deps:
-                tasks[dep] >> tasks[name]  # dep runs before name
+                tasks[dep] >> tasks[name]
     return dag
 
 
@@ -145,8 +124,6 @@ def run(dry_run):
 
         dag = build_dag(config, procedures, warehouse)
         dag_op = DAGOperation(schema)
-        # or_replace makes redeploys idempotent; DAGOperation owns suspend/resume
-        # ordering across the whole graph.
         dag_op.deploy(dag, mode=CreateMode.or_replace)
         dag_op.run(dag)
     finally:

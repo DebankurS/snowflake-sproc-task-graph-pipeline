@@ -1,10 +1,9 @@
 #!/usr/bin/env sh
-# Exchanges Azure AD client-credentials for an access token scoped to the
-# Snowflake EXTERNAL_OAUTH security integration, and prints it to stdout.
+# Exchanges Azure AD client-credentials for a Snowflake EXTERNAL_OAUTH
+# access token and prints it to stdout.
 #
 # Required env vars: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
-# SNOWFLAKE_OAUTH_SCOPE (the scope/resource registered against the
-# Snowflake security integration, e.g. api://<app-id>/.default).
+# SNOWFLAKE_OAUTH_SCOPE (e.g. api://<app-id>/.default).
 set -eu
 
 TOKEN_RESPONSE=$(curl -sf -X POST \

@@ -1,13 +1,9 @@
 from langdetect import DetectorFactory, detect
 
-# langdetect's Naive Bayes filter samples randomly internally; without a
-# fixed seed the same input can get a different language code on different
-# runs (documented behavior of the library). Downstream nodes key off this
-# result, so determinism here matters more than it would standalone.
+# langdetect samples randomly internally; seed it so results are deterministic.
 DetectorFactory.seed = 0
 
-# Illustrative sample payload -- in production this would be the text
-# ingest-tickets just wrote out, read back via `session`.
+# Sample payload; production would read ingest-tickets' output via `session`.
 SAMPLE_BODIES = [
     "My card was declined twice.",
     "Impossible de me connecter depuis hier.",

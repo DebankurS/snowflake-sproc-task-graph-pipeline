@@ -1,43 +1,14 @@
 """
 Registers each procedures/<name>/ node as a permanent Python stored
-procedure in Snowflake -- the "build" step, analogous to Kaniko building and
-pushing an image per services/<name>/Dockerfile in the SPCS task-graph
-pipeline this repo is modeled on.
+procedure in Snowflake, via Snowpark's session.sproc.register_from_file.
 
-Each node's application logic lives in its own procedures/<name>/src/ folder
--- an arbitrarily deep package, not a single file, and never inlined as a
-string in this script or in deploy_task_graph.py. Adding a task graph node
-is just adding a new procedures/<name>/ directory with a procedure.yaml +
-src/ -- this script discovers nodes by scanning, no per-service code here.
-
-Uses Snowpark's StoredProcedureRegistration.register_from_file
-(session.sproc.register_from_file) to upload each node's entrypoint file
-plus every other file/folder alongside it in src/ (auto-zipped, structure
-preserved) to the permanent stage from task-graph.yaml, and
-CREATE OR REPLACE PROCEDURE the result -- no hand-written CREATE PROCEDURE
-SQL. register_from_file uploads the entrypoint file's bytes directly rather
-than importing it as a Python module in this process, so this script never
-needs whatever third-party packages a node's own handler code imports --
-only PyYAML and snowflake-snowpark-python, same as deploy_task_graph.py.
-
-A node's procedures/<name>/pyproject.toml `[project.dependencies]` (see
-anaconda_packages()) is what gets requested from Snowflake's Anaconda
-channel -- exact-pinned, and also what `uv sync` in that directory installs
-for local testing, so there's one list instead of two that can drift apart.
-For a dependency that isn't on the Anaconda channel -- an internal/private
-package, or anything pip-only -- there's no Anaconda package to request, so
-it has to be vendored: download (or build) its wheel, and every wheel in its
-own dependency chain that also isn't on the Anaconda channel, and commit
-them under procedures/<name>/vendor/ (also listed, same pins, in that node's
-pyproject.toml `vendored` dependency-group -- purely so `uv sync` installs
-them too, never sent to Snowflake). Each one rides along as one more
-`imports` entry next to the sibling .py files, same as any other zip/wheel
-passed to register_from_file's `imports`. See procedures/ingest-tickets/ for
-a worked example: it vendors python-slugify *and* text-unidecode, the
-dependency python-slugify itself pulls in -- vendoring one package usually
-means vendoring its whole non-Anaconda dependency closure, not just the
-top-level one. Convention-based like everything else here: a vendor/ folder
-next to src/ is picked up automatically, no procedure.yaml field needed.
+Each node's pyproject.toml `[project.dependencies]` is both what gets
+requested from Snowflake's Anaconda channel and what `uv sync` installs
+locally, so there's one dependency list instead of two that can drift.
+Anything not on the Anaconda channel is vendored instead: its wheel (and any
+non-Anaconda wheels in its own dependency chain) committed under
+procedures/<name>/vendor/, listed in that node's pyproject.toml `vendored`
+group for local `uv sync`, and picked up automatically here.
 
 Required env vars (unless --dry-run): SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
 SNOWFLAKE_TOKEN, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE.
@@ -53,11 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PROCEDURES_DIR = REPO_ROOT / "procedures"
 CONFIG_FILE = REPO_ROOT / "task-graph.yaml"
 
-# Package names that differ between PyPI (what each node's pyproject.toml
-# lists, and what `uv` resolves against for local testing) and Snowflake's
-# Anaconda channel (what CREATE PROCEDURE ... PACKAGES expects). `pytorch`
-# is the standing example: PyPI/import name is `torch`, Anaconda channel
-# name is `pytorch`. Extend this if another mismatch turns up.
+# PyPI name -> Anaconda channel name, where they differ (e.g. torch/pytorch).
 ANACONDA_PACKAGE_NAME_OVERRIDES = {
     "torch": "pytorch",
 }
@@ -68,16 +35,10 @@ def load_config():
 
 
 def anaconda_packages(node_dir):
-    """Each node's procedures/<name>/pyproject.toml `[project.dependencies]`
-    is the single source of truth for what's requested from Snowflake's
-    Anaconda channel -- exact-pinned, so a `uv sync` in that directory
-    installs the identical versions used at deploy time, and a typo or drift
-    between "what's tested" and "what's deployed" isn't possible. Anything
-    only available as a vendored wheel (not on Anaconda) belongs in that
-    pyproject.toml's `vendored` dependency-group instead, purely so `uv
-    sync` installs it too for local testing -- it's never returned from
-    here; the committed vendor/*.whl is the real deploy artifact for those,
-    picked up separately by vendor_imports()."""
+    """Packages to request from Snowflake's Anaconda channel, from
+    pyproject.toml's [project.dependencies]. Vendored deps live in that
+    file's `vendored` group instead and aren't returned here -- see
+    vendor_imports()."""
     data = tomllib.loads((node_dir / "pyproject.toml").read_text())
     packages = []
     for dep in data["project"]["dependencies"]:
@@ -111,12 +72,8 @@ def load_procedures():
 
 
 def sibling_imports(entrypoint):
-    """Every other file/folder next to the entrypoint inside its src/ dir --
-    passed as `imports` so register_from_file bundles them (auto-zipped,
-    structure preserved) without re-uploading the entrypoint file itself
-    twice. This is what lets a node's app logic be a whole package (e.g.
-    src/handler.py importing src/lib/*.py) instead of one flat file, with no
-    per-node special-casing here."""
+    """Every other file/folder next to the entrypoint in its src/ dir, so a
+    node's app logic can be a package rather than one flat file."""
     src_dir = entrypoint.parent
     return sorted(
         str(item)
@@ -126,21 +83,14 @@ def sibling_imports(entrypoint):
 
 
 def vendor_imports(vendor_dir):
-    """Wheels/zips for dependencies that aren't on Snowflake's Anaconda
-    channel (see module docstring) -- procedures/<name>/vendor/*, if that
-    directory exists. Passed to register_from_file's `imports` right
-    alongside the sibling .py imports; Snowpark unpacks a .whl/.zip onto
-    sys.path the same way it does for a package directory."""
+    """Vendored wheels/zips from procedures/<name>/vendor/, if present."""
     if not vendor_dir.is_dir():
         return []
     return sorted(str(item) for item in vendor_dir.iterdir())
 
 
 def proc_name(name):
-    # Snowflake unquoted identifiers can't contain hyphens; this name gets
-    # embedded in a raw `CALL` statement (deploy_task_graph.py), unlike node
-    # names themselves which go through the structured DAG/Task API and get
-    # quoted automatically.
+    # Snowflake unquoted identifiers can't contain hyphens.
     return f"{name.replace('-', '_')}_proc"
 
 

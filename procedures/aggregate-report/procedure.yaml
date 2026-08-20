@@ -2,5 +2,3 @@ name: aggregate-report
 depends_on: [classify-sentiment, extract-entities]
 entrypoint: src/handler.py
 handler: run
-# Dependencies (Anaconda-channel packages requested at deploy, plus what
-# `uv sync` installs for local testing) live in pyproject.toml, not here.

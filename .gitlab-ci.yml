@@ -1,35 +1,17 @@
 # Deploys a Snowflake Task Graph (a DAG of Snowflake Tasks) that runs each
-# node as a permanent Python stored procedure, authenticating to Snowflake
-# via Entra ID (Azure AD) OAuth client-credentials. Modeled on the sibling
-# snowflake-spcs-task-graph-pipeline repo, with the Kaniko/image-registry
-# stage dropped since stored procedures have no container image to build --
-# "build" here means uploading each node's code to a Snowflake stage instead.
+# node as a permanent Python stored procedure, authenticating via Entra ID
+# (Azure AD) OAuth client-credentials.
 #
-# The dependency graph between tasks comes from each service's
-# procedures/<name>/procedure.yaml (depends_on: [...]); Snowflake-side
-# config (database, schema, DAG name, stage) comes from task-graph.yaml.
-# Both CI scripts discover nodes by scanning procedures/*, so adding a task
-# graph node is just adding a new procedures/<name>/ folder, no changes
-# needed here.
+# Task dependencies come from each procedures/<name>/procedure.yaml
+# (depends_on: [...]); Snowflake-side config (database, schema, DAG name,
+# stage) comes from task-graph.yaml. Adding a task graph node is just adding
+# a new procedures/<name>/ folder -- both CI scripts discover nodes by
+# scanning procedures/*.
 #
-# Each node's application logic lives in its own procedures/<name>/src/
-# folder -- not inlined in either script -- and can be an arbitrarily deep
-# package (e.g. procedures/task-b/src/handler.py importing
-# procedures/task-b/src/lib/*.py).
-#
-# register_procedures.py (register stage) uses Snowpark's
-# session.sproc.register_from_file to upload each node's src/ folder and
-# CREATE OR REPLACE a permanent stored procedure per node -- no hand-written
-# CREATE PROCEDURE SQL, and no need to import a node's own code into this
-# process.
-#
-# deploy_task_graph.py (deploy stage) builds and deploys the graph with the
-# Snowflake Python API (snowflake.core: Root, and snowflake.core.task.dagv1's
-# DAG / DAGTask / DAGOperation) -- no hand-written CREATE/ALTER/SUSPEND/
-# RESUME TASK SQL; DAGOperation owns that. Each task's body is a plain
-# `CALL <name>_proc()` statement invoking the procedure the register stage
-# already created -- the one thing here with no snowflake.core equivalent
-# for referencing an existing permanent procedure by name.
+# register_procedures.py (register stage) uploads each node's src/ and
+# CREATE OR REPLACE's its permanent stored procedure. deploy_task_graph.py
+# (deploy stage) builds and deploys the DAG, with each task body a plain
+# `CALL <name>_proc()` against the procedure register stage just created.
 #
 # Python jobs use uv (github.com/astral-sh/uv) against ci/pyproject.toml +
 # ci/uv.lock rather than pip/requirements.txt.
@@ -67,11 +49,8 @@ default:
     - apt-get update -qq && apt-get install -y -qq curl jq && rm -rf /var/lib/apt/lists/*
     - uv sync --project ci
 
-# Runs the cycle-detection / manifest validation that register_procedures.py
-# and deploy_task_graph.py already support via --dry-run, but on merge
-# requests too -- so a bad procedure.yaml (unknown depends_on, a cycle, a
-# missing entrypoint) is caught before it lands on main, not after it's
-# already broken the next real deploy.
+# Catches a bad procedure.yaml (unknown depends_on, cycle, missing
+# entrypoint) before it lands on main.
 validate_task_graph:
   stage: validate
   script:
@@ -92,9 +71,7 @@ register_procedures:
 deploy_task_graph:
   stage: deploy
   needs: ["register_procedures"]
-  # Named environment so this can be put behind a GitLab protected
-  # environment (required approvals / allowed deployers) -- this job
-  # reconciles the live production task graph on every push to main.
+  # Lets this be put behind a GitLab protected environment.
   environment:
     name: production
   script:

@@ -1,8 +1,7 @@
 from bs4 import BeautifulSoup
 from slugify import slugify
 
-# Illustrative sample payload -- in production this task would read raw
-# landed tickets from a Snowflake table via `session` instead.
+# Sample payload; production would read from a Snowflake table via `session`.
 RAW_TICKETS = [
     {
         "subject": "Payment Failed -- Order #4821",

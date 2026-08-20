@@ -2,17 +2,7 @@ name: classify-sentiment
 depends_on: [detect-language]
 entrypoint: src/handler.py
 handler: run
-# Dependencies (Anaconda-channel packages requested at deploy, plus what
-# `uv sync` installs for local testing) live in pyproject.toml, not here.
-# Nothing here is vendored: handler.py fetches the model weights itself, at
-# runtime, from the Hugging Face Hub (see src/handler.py) rather than
-# bundling them under src/model/ -- ~268MB of weights is over GitHub's push
-# limit without Git LFS, which this repo deliberately doesn't use.
-#
-# Pass-through to register_from_file's external_access_integrations -- this
-# node needs outbound HTTPS to huggingface.co to fetch model weights on
-# cold start. Requires a Snowflake EXTERNAL ACCESS INTEGRATION (with a
-# NETWORK RULE for huggingface.co) already created in the account -- a
-# one-time prerequisite, same as the OAuth security integration in
-# .gitlab-ci.yml; this pipeline doesn't create it.
+# Needs outbound HTTPS to huggingface.co to fetch model weights on cold
+# start (see src/handler.py). Requires a Snowflake EXTERNAL ACCESS
+# INTEGRATION with a NETWORK RULE for huggingface.co, created out-of-band.
 external_access_integrations: [huggingface_access_integration]
