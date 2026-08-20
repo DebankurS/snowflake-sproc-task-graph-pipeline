@@ -1,0 +1,79 @@
+# Deploys a Snowflake Task Graph (a DAG of Snowflake Tasks) that runs each
+# node as a permanent Python stored procedure, authenticating to Snowflake
+# via Entra ID (Azure AD) OAuth client-credentials. Modeled on the sibling
+# snowflake-spcs-task-graph-pipeline repo, with the Kaniko/image-registry
+# stage dropped since stored procedures have no container image to build --
+# "build" here means uploading each node's code to a Snowflake stage instead.
+#
+# The dependency graph between tasks comes from each service's
+# procedures/<name>/procedure.yaml (depends_on: [...]); Snowflake-side
+# config (database, schema, DAG name, stage) comes from task-graph.yaml.
+# Both CI scripts discover nodes by scanning procedures/*, so adding a task
+# graph node is just adding a new procedures/<name>/ folder, no changes
+# needed here.
+#
+# Each node's application logic lives in its own procedures/<name>/src/
+# folder -- not inlined in either script -- and can be an arbitrarily deep
+# package (e.g. procedures/task-b/src/handler.py importing
+# procedures/task-b/src/lib/*.py).
+#
+# register_procedures.py (register stage) uses Snowpark's
+# session.sproc.register_from_file to upload each node's src/ folder and
+# CREATE OR REPLACE a permanent stored procedure per node -- no hand-written
+# CREATE PROCEDURE SQL, and no need to import a node's own code into this
+# process.
+#
+# deploy_task_graph.py (deploy stage) builds and deploys the graph with the
+# Snowflake Python API (snowflake.core: Root, and snowflake.core.task.dagv1's
+# DAG / DAGTask / DAGOperation) -- no hand-written CREATE/ALTER/SUSPEND/
+# RESUME TASK SQL; DAGOperation owns that. Each task's body is a plain
+# `CALL <name>_proc()` statement invoking the procedure the register stage
+# already created -- the one thing here with no snowflake.core equivalent
+# for referencing an existing permanent procedure by name.
+#
+# Python jobs use uv (github.com/astral-sh/uv) against ci/pyproject.toml +
+# ci/uv.lock rather than pip/requirements.txt.
+#
+# Prerequisites (one-time, not done by this pipeline):
+#   - A Snowflake SECURITY INTEGRATION of TYPE = EXTERNAL_OAUTH configured for
+#     Azure AD, with a role mapping for the CI service principal.
+#   - An Azure AD App Registration with a client secret, granted access to
+#     the scope registered against that Snowflake integration.
+#
+# Required GitLab CI/CD variables (Settings > CI/CD > Variables; mark
+# AZURE_CLIENT_SECRET as Masked + Protected):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   SNOWFLAKE_OAUTH_SCOPE     e.g. api://<app-id>/.default
+#   SNOWFLAKE_ACCOUNT         account identifier, e.g. myorg-myaccount
+#   SNOWFLAKE_USER            login name the Azure token maps to
+#   SNOWFLAKE_ROLE            e.g. tutorial_role
+#   SNOWFLAKE_WAREHOUSE       e.g. tutorial_warehouse
+
+stages:
+  - register
+  - deploy
+
+register_procedures:
+  stage: register
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl jq && rm -rf /var/lib/apt/lists/*
+    - uv sync --project ci --no-cache
+  script:
+    - export SNOWFLAKE_TOKEN=$(sh ci/lib/get_snowflake_token.sh)
+    - uv run --project ci python ci/lib/register_procedures.py
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+deploy_task_graph:
+  stage: deploy
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  needs: ["register_procedures"]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl jq && rm -rf /var/lib/apt/lists/*
+    - uv sync --project ci --no-cache
+  script:
+    - export SNOWFLAKE_TOKEN=$(sh ci/lib/get_snowflake_token.sh)
+    - uv run --project ci python ci/lib/deploy_task_graph.py
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

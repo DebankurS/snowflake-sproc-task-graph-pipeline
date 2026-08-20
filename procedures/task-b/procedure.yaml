@@ -1,0 +1,5 @@
+name: task-b
+depends_on: [task-a]
+entrypoint: src/handler.py
+handler: run
+packages: [snowflake-snowpark-python]

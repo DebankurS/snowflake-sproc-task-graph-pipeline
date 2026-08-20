@@ -1,0 +1,10 @@
+name: task-a
+depends_on: []
+# Path (relative to this file) to the Python file containing the handler
+# function, and the function's name. The function's first parameter must be
+# the Snowpark Session (Snowflake's calling convention for Python stored
+# procedures), even if unused.
+entrypoint: src/handler.py
+handler: run
+# Anaconda-channel package requirements for CREATE PROCEDURE ... PACKAGES.
+packages: [snowflake-snowpark-python]
