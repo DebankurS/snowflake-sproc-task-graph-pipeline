@@ -20,6 +20,20 @@ than importing it as a Python module in this process, so this script never
 needs whatever third-party packages a node's own handler code imports --
 only PyYAML and snowflake-snowpark-python, same as deploy_task_graph.py.
 
+A node's `packages:` list (procedure.yaml) only resolves against Snowflake's
+Anaconda channel. For a dependency that isn't there -- an internal/private
+package, or anything pip-only -- there's no Anaconda package to request, so
+it has to be vendored: download (or build) its wheel, and every wheel in its
+own dependency chain that also isn't on the Anaconda channel, and commit
+them under procedures/<name>/vendor/. Each one rides along as one more
+`imports` entry next to the sibling .py files, same as any other zip/wheel
+passed to register_from_file's `imports`. See procedures/task-e/ for a
+worked example: it vendors python-slugify *and* text-unidecode, the
+dependency python-slugify itself pulls in -- vendoring one package usually
+means vendoring its whole non-Anaconda dependency closure, not just the
+top-level one. Convention-based like everything else here: a vendor/ folder
+next to src/ is picked up automatically, no procedure.yaml field needed.
+
 Required env vars (unless --dry-run): SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
 SNOWFLAKE_TOKEN, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE.
 """
@@ -49,6 +63,8 @@ def load_procedures():
             "entrypoint": entrypoint,
             "handler": data["handler"],
             "packages": data.get("packages", ["snowflake-snowpark-python"]),
+            "vendor_dir": node_dir / "vendor",
+            "external_access_integrations": data.get("external_access_integrations", []),
         }
 
     for name, p in procedures.items():
@@ -68,8 +84,21 @@ def sibling_imports(entrypoint):
     per-node special-casing here."""
     src_dir = entrypoint.parent
     return sorted(
-        str(item) for item in src_dir.iterdir() if item.resolve() != entrypoint
+        str(item)
+        for item in src_dir.iterdir()
+        if item.resolve() != entrypoint and item.name != "__pycache__"
     )
+
+
+def vendor_imports(vendor_dir):
+    """Wheels/zips for dependencies that aren't on Snowflake's Anaconda
+    channel (see module docstring) -- procedures/<name>/vendor/*, if that
+    directory exists. Passed to register_from_file's `imports` right
+    alongside the sibling .py imports; Snowpark unpacks a .whl/.zip onto
+    sys.path the same way it does for a package directory."""
+    if not vendor_dir.is_dir():
+        return []
+    return sorted(str(item) for item in vendor_dir.iterdir())
 
 
 def proc_name(name):
@@ -91,10 +120,15 @@ def register(dry_run):
             imports = [
                 str(Path(i).relative_to(REPO_ROOT)) for i in sibling_imports(p["entrypoint"])
             ]
+            vendored = [
+                str(Path(i).relative_to(REPO_ROOT)) for i in vendor_imports(p["vendor_dir"])
+            ]
             print(f"-- {proc_name(name)} --")
             print(f"  entrypoint: {rel_entry}:{p['handler']}")
             print(f"  imports:    {imports or '(none)'}")
+            print(f"  vendored:   {vendored or '(none)'}")
             print(f"  packages:   {p['packages']}")
+            print(f"  ext access: {p['external_access_integrations'] or '(none)'}")
         return
 
     from snowflake.snowpark import Session
@@ -116,6 +150,7 @@ def register(dry_run):
 
     for name, p in procedures.items():
         target = proc_name(name)
+        imports = sibling_imports(p["entrypoint"]) + vendor_imports(p["vendor_dir"])
         print(f"Registering {target} from {p['entrypoint'].relative_to(REPO_ROOT)}:{p['handler']}")
         session.sproc.register_from_file(
             file_path=str(p["entrypoint"]),
@@ -123,8 +158,9 @@ def register(dry_run):
             name=target,
             is_permanent=True,
             stage_location=f"@{config['stage']}",
-            imports=sibling_imports(p["entrypoint"]) or None,
+            imports=imports or None,
             packages=p["packages"],
+            external_access_integrations=p["external_access_integrations"] or None,
             replace=True,
         )
 

@@ -1,0 +1,12 @@
+name: ingest-tickets
+depends_on: []
+entrypoint: src/handler.py
+handler: run
+# beautifulsoup4 and its dependency soupsieve are treated as available on
+# Snowflake's Anaconda channel (both are common conda-forge packages) --
+# not independently verified against a live account from here.
+#
+# python-slugify and its own dependency text-unidecode are NOT on the
+# Anaconda channel, so they're vendored instead -- see vendor/ and
+# register_procedures.py's vendor_imports().
+packages: [snowflake-snowpark-python, beautifulsoup4, soupsieve]

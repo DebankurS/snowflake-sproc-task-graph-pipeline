@@ -13,12 +13,59 @@ config (database, schema, stage, DAG name) comes from `task-graph.yaml`.
 Adding a task to the graph is just adding a new `procedures/<name>/`
 directory -- no CI or deploy-script changes required.
 
+## The example graph: support-ticket enrichment
+
+The graph in `procedures/` is a worked example, not just stubs: a
+multi-stage pipeline that normalizes raw support tickets, detects their
+language, classifies sentiment with a small transformer model, extracts
+structured entities, and joins the results. It's a branching DAG, not a
+straight line:
+
+```mermaid
+flowchart LR
+    ingest["ingest-tickets<br/>bs4 + slugify"]
+    lang["detect-language<br/>langdetect"]
+    sentiment["classify-sentiment<br/>transformers"]
+    entities["extract-entities<br/>phonenumbers"]
+    aggregate["aggregate-report"]
+
+    ingest --> lang --> sentiment --> aggregate
+    ingest --> entities --> aggregate
+
+    classDef mixed fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef anaconda fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef vendored fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef none fill:#f3f4f6,stroke:#9ca3af,color:#374151
+
+    class ingest mixed
+    class lang mixed
+    class sentiment anaconda
+    class entities vendored
+    class aggregate none
+```
+
+🟡 mixed (Anaconda `packages:` + vendored) &nbsp;·&nbsp; 🔵 Anaconda `packages:` only &nbsp;·&nbsp; 🟢 vendored only &nbsp;·&nbsp; ⚪ no external dependency
+
+Each node operates on a small embedded sample payload and returns a
+descriptive string, rather than doing real Snowflake table I/O -- `session`
+stays present but unused, per the calling convention, and `depends_on`
+expresses the data dependency a production version would have (each stage
+reading the table the previous one wrote). The point of the example is the
+*dependency* story, which every non-leaf node has a different flavor of:
+
+| Node | External library | Where it comes from |
+|---|---|---|
+| `ingest-tickets` | `beautifulsoup4` (HTML stripping), `python-slugify` + `text-unidecode` | bs4 via Anaconda `packages:`; slugify + its own dependency vendored (a 2-level chain) |
+| `detect-language` | `langdetect` (+ `six`) | `six` via Anaconda `packages:`, `langdetect` vendored -- a node mixing both |
+| `classify-sentiment` | `transformers` + `pytorch`, plus a model fetched at runtime | both via Anaconda `packages:`, nothing vendored -- see below |
+| `extract-entities` | `phonenumbers` | vendored -- a single, data-heavy package rather than a chain |
+| `aggregate-report` | none | plain fan-in join |
+
 ## Why stored procedures need a "build" step at all
 
 A node's application logic is never inlined into a deploy script as a
 Python string -- it's a real folder (`procedures/<name>/src/`) that can be
-as deep and multi-module as it needs to be (see `procedures/task-b/` for an
-example with a `lib/` submodule). Snowflake's `CREATE PROCEDURE` supports
+as deep and multi-module as it needs to be. Snowflake's `CREATE PROCEDURE` supports
 pointing `HANDLER` at a function inside code that's already sitting on a
 stage, with no `AS` clause needed -- so, just like the SPCS pipeline builds
 an image once and references it by tag, this pipeline uploads each node's
@@ -57,6 +104,8 @@ procedures/<name>/
   procedure.yaml            name, depends_on (edges in the DAG), entrypoint, handler, packages
   src/                       The node's application code -- its own folder structure,
                              can be arbitrarily complex, never nested inline elsewhere
+  vendor/                    Optional. Wheels for dependencies not on Snowflake's
+                             Anaconda channel -- auto-picked-up, see below
 ci/
   pyproject.toml, uv.lock   Python deps for the register/deploy steps (managed with uv)
   lib/
@@ -64,6 +113,82 @@ ci/
     register_procedures.py   Discovers nodes, uploads code, creates permanent procedures
     deploy_task_graph.py     Discovers the graph, builds + deploys the DAG
 ```
+
+## Using a dependency that isn't on Snowflake's Anaconda channel
+
+`procedure.yaml`'s `packages:` list only resolves against Snowflake's
+Anaconda channel (`CREATE PROCEDURE ... PACKAGES`). For anything else --
+an internal/private package, or a pip-only dependency with no Anaconda
+build -- there's no package name to request, so it has to be vendored as a
+wheel instead:
+
+1. Download (or build) the wheel, *and* the wheel for every dependency it
+   pulls in that also isn't on the Anaconda channel -- vendoring a package
+   usually means vendoring its whole non-Anaconda dependency closure, not
+   just the top-level package. Commit them all under
+   `procedures/<name>/vendor/`.
+2. That's it -- `register_procedures.py` picks up every file in `vendor/`
+   automatically and passes it to `register_from_file`'s `imports` alongside
+   the sibling `.py` files from `src/`, the same way Snowpark handles any
+   other zip/wheel import. No `procedure.yaml` field, no script change.
+
+This only works for pure-Python wheels: Snowflake's stored procedure sandbox
+runs on Linux x86_64, so a wheel with a compiled/native extension built on
+your own machine won't load there.
+
+Snowflake unpacks a `.zip`/`.whl` import to a real directory in the sandbox
+before adding it to `sys.path` -- it isn't left compressed. That matters for
+packages that reach for their own bundled data files with a plain `open()`
+call instead of `importlib.resources`: they need the unpacked-directory
+behavior to work at all. When testing a vendored wheel locally, extract it
+to a directory and put *that* on `sys.path` (not the `.whl` file itself) to
+match what Snowflake actually does -- `langdetect` (used by
+`detect-language`) is a real example of a package that needs this; testing
+it via raw zipimport instead fails on its bundled `messages.properties`
+file.
+
+`ingest-tickets/vendor/` (a 2-level chain: `python-slugify` depends on
+`text-unidecode`), `detect-language/vendor/` (a single package, `langdetect`),
+and `extract-entities/vendor/` (a single data-heavy package, `phonenumbers`)
+are all worked examples, vendored the same way:
+
+```sh
+pip download --no-deps -d procedures/ingest-tickets/vendor python-slugify text-unidecode
+pip download --no-deps -d procedures/extract-entities/vendor phonenumbers
+# langdetect only publishes a source distribution on PyPI, no wheel --
+# `pip wheel` builds one locally instead of just downloading it:
+pip wheel --no-deps -w procedures/detect-language/vendor langdetect
+```
+
+### Data too big to commit: the sentiment model
+
+`classify-sentiment` needs real fine-tuned model weights
+(`distilbert-base-uncased-finetuned-sst-2-english`, ~268MB), not a Python
+package -- so it doesn't go through `vendor/` at all, and it isn't
+committed either: at ~268MB it's over GitHub's 100MB push limit without
+Git LFS, and this repo deliberately doesn't use LFS.
+
+Instead, `src/handler.py` builds its `pipeline("sentiment-analysis", ...)`
+at module scope, by model id rather than a local path -- `transformers`
+resolves that id against the Hugging Face Hub and downloads the weights
+itself. Module scope matters: it means the download happens once, at
+stored procedure initialization on a cold start, and the same in-memory
+classifier is reused for every call on that warm sandbox, rather than
+being re-fetched per invocation.
+
+That requires the stored procedure sandbox to reach `huggingface.co` at
+runtime, which Snowflake only allows via an `EXTERNAL ACCESS INTEGRATION`
+(with a `NETWORK RULE` permitting that host) created ahead of time in the
+account -- a one-time prerequisite this pipeline doesn't create, same as
+the Azure AD / OAuth security integration in `.gitlab-ci.yml`.
+`procedure.yaml`'s `external_access_integrations:` field names it, and
+`register_procedures.py` passes that straight through to
+`register_from_file`'s `external_access_integrations` argument -- no
+per-node special-casing, same pattern as `packages:`.
+
+`transformers` and `pytorch` themselves are requested via `packages:`
+(Snowflake's Anaconda channel carries both, for Snowpark ML) -- vendoring
+is for filling gaps in the Anaconda channel, not a substitute for it.
 
 ## Adding a task
 

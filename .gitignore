@@ -1,3 +1,14 @@
 __pycache__/
 *.pyc
 .venv/
+
+# pip/setuptools build output when rebuilding a procedures/*/vendor-src wheel
+*.egg-info/
+build/
+
+# Model weights: classify-sentiment fetches these from the Hugging Face Hub
+# at runtime (see procedures/classify-sentiment/src/handler.py) rather than
+# bundling them -- GitHub rejects pushes of files this size without Git
+# LFS, which this repo deliberately doesn't use. Guards against a local
+# copy (e.g. from manual testing) getting committed by accident.
+*.safetensors

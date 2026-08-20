@@ -2,7 +2,7 @@
 # (ci/lib/register_procedures.py, ci/lib/deploy_task_graph.py). Connection
 # credentials and per-build values stay as CI variables/env vars -- this
 # file is just the stable, non-secret structure.
-dag_name: sproc_task_graph_demo
+dag_name: support_ticket_enrichment
 database: tutorial_db
 schema: data_schema
 # Permanent internal stage backing each node's uploaded procedure code.

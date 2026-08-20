@@ -1,0 +1,6 @@
+name: aggregate-report
+depends_on: [classify-sentiment, extract-entities]
+entrypoint: src/handler.py
+handler: run
+# Fan-in leaf node -- no external library needed, just a join.
+packages: [snowflake-snowpark-python]
